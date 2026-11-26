@@ -11,6 +11,7 @@ struct PanelView: View {
             header
             ConnectionGate(model: model) { s in
                 PanelHero(status: s)
+                SuppressControl(model: model, status: s)
                 PanelProfiles(model: model, status: s)
                 if let note = s.lastError { NoticeRow(text: note) }
             }

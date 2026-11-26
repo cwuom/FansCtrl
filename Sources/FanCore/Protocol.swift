@@ -16,6 +16,8 @@ public enum IPCCommand: Equatable, Sendable {
     case status
     case setProfile(FanProfile)
     case setQuietFirst(Bool)
+    /// true 开启强力压制（固定 60 秒），false 提前结束
+    case setSuppress(Bool)
 
     private struct Wire: Codable {
         var cmd: String
@@ -29,6 +31,7 @@ public enum IPCCommand: Equatable, Sendable {
         case .status: wire = Wire(cmd: "status")
         case .setProfile(let p): wire = Wire(cmd: "setProfile", profile: p.rawValue)
         case .setQuietFirst(let v): wire = Wire(cmd: "setQuietFirst", value: v)
+        case .setSuppress(let v): wire = Wire(cmd: "suppress", value: v)
         }
         return try JSONEncoder().encode(wire)
     }
@@ -46,6 +49,9 @@ public enum IPCCommand: Equatable, Sendable {
         case "setQuietFirst":
             guard let v = wire.value else { throw IPCError.invalidRequest("缺少 value") }
             return .setQuietFirst(v)
+        case "suppress":
+            guard let v = wire.value else { throw IPCError.invalidRequest("缺少 value") }
+            return .setSuppress(v)
         default:
             throw IPCError.invalidRequest("未知命令")
         }
@@ -107,6 +113,12 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
     public var controlSupported: Bool
     public var dryRun: Bool
     public var lastError: String?
+    /// 强力压制剩余秒数；未在压制时为 nil
+    public var suppressRemaining: Double?
+    /// 强力压制冷却剩余秒数
+    public var suppressCooldown: Double?
+    /// 强力压制被安全机制提前结束的原因
+    public var suppressNote: String?
 
     public init(
         model: String,
@@ -124,7 +136,10 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
         fans: [FanStatus],
         controlSupported: Bool,
         dryRun: Bool,
-        lastError: String?
+        lastError: String?,
+        suppressRemaining: Double? = nil,
+        suppressCooldown: Double? = nil,
+        suppressNote: String? = nil
     ) {
         self.model = model
         self.selectedProfile = selectedProfile
@@ -142,6 +157,9 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
         self.controlSupported = controlSupported
         self.dryRun = dryRun
         self.lastError = lastError
+        self.suppressRemaining = suppressRemaining
+        self.suppressCooldown = suppressCooldown
+        self.suppressNote = suppressNote
     }
 }
 

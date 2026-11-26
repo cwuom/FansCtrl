@@ -98,6 +98,7 @@ enum Palette {
         case .system, .manual, .capped, .paused: return .secondary
         case .released, .sensorFault, .unsupported: return .orange
         case .emergency: return .red
+        case .suppressed: return .indigo
         }
     }
 

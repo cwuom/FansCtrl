@@ -14,6 +14,7 @@ extension ControlState {
         case .sensorFault: return "sensor.tag.radiowaves.forward"
         case .paused: return "pause.circle"
         case .unsupported: return "nosign"
+        case .suppressed: return "speaker.slash.fill"
         }
     }
 }

@@ -24,12 +24,17 @@ func printStatus(_ s: StatusSnapshot) {
         let plan = f.plannedRPM.map { "  下发 \(Int($0))" } ?? "  下发 系统"
         print("风扇 \(f.index)    \(fmt(f.actualRPM, " RPM"))  SMC目标 \(fmt(f.targetRPM, ""))\(plan)  范围 \(Int(f.minRPM))–\(Int(f.maxRPM))  \(mode)")
     }
+    if let r = s.suppressRemaining { print("强力压制  剩余 \(Int(r.rounded(.up))) 秒") }
+    if let c = s.suppressCooldown { print("强力压制  冷却中，\(Int(c.rounded(.up))) 秒后可用") }
+    if let n = s.suppressNote { print("提示      \(n)") }
     if let e = s.lastError { print("提示      \(e)") }
 }
 
 func send(_ cmd: IPCCommand) -> StatusSnapshot {
-    do { return try IPCClient().send(cmd) } catch {
-        fail("\(error)（守护进程是否已安装？见 README）")
+    do { return try IPCClient().send(cmd) } catch IPCError.notRunning {
+        fail("\(IPCError.notRunning)（守护进程是否已安装？见 README）")
+    } catch {
+        fail("\(error)")
     }
 }
 
@@ -92,6 +97,7 @@ let usage = """
   fanctl status                 查看当前状态
   fanctl set <档位>             切换档位：\(FanProfile.allCases.map(\.rawValue).joined(separator: " | "))
   fanctl quiet-first on|off     智能档的静音优先（图书馆/课堂）
+  fanctl suppress [off]         强力压制 60 秒：风扇瞬间降到最低转速（请立刻关闭高负载软件）
   fanctl watch                  每 2 秒刷新状态
   fanctl probe                  只读检测本机风扇与传感器（无需守护进程）
   sudo fanctl selftest          实测本机是否接受手动转速（需先停用守护进程控制）
@@ -107,6 +113,12 @@ case "set":
 case "quiet-first":
     guard argv.count == 2, ["on", "off"].contains(argv[1]) else { fail(usage, code: 64) }
     printStatus(send(.setQuietFirst(argv[1] == "on")))
+case "suppress":
+    guard argv.count <= 2, argv.count == 1 || argv[1] == "off" else { fail(usage, code: 64) }
+    let on = argv.count == 1
+    let status = send(.setSuppress(on))
+    if on { print("⚠️ 强力压制会瞬间降低噪音 60 秒，请立刻关闭高负载软件。温度过高时会自动提前结束。\n") }
+    printStatus(status)
 case "watch":
     while true {
         print("\u{1B}[2J\u{1B}[H", terminator: "")

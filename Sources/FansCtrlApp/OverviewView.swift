@@ -18,6 +18,17 @@ struct OverviewView: View {
                 profileCard
                 systemCard
             }
+            VStack(alignment: .leading, spacing: 10) {
+                CardTitle("强力压制", symbol: "speaker.slash")
+                Text("风扇突然变吵时使用：瞬间压到最低转速 60 秒，给你时间关闭高负载软件。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                SuppressControl(model: model, status: status)
+                    .frame(maxWidth: 420, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .glassCard()
             HistoryCard(history: model.history, maxRPM: status.fans.map(\.maxRPM).max() ?? 6000)
             if let note = status.lastError { NoticeRow(text: note) }
             if let m = model.message { NoticeRow(text: m, tint: .blue) }

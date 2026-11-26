@@ -15,6 +15,8 @@ final class Daemon: @unchecked Sendable {
 
     private var controller: FanController
     private var smart = SmartSelector()
+    private var suppression = Suppression()
+    private var suppressNote: String?
     private let cpu = CPULoadSampler()
     private var timer: DispatchSourceTimer?
     private let interval: TimeInterval = 2
@@ -83,6 +85,7 @@ final class Daemon: @unchecked Sendable {
     func willSleep() {
         queue.sync {
             paused = true
+            suppression.end(now: now)
             state = .paused
             releaseToSystem(force: true)
         }
@@ -100,8 +103,8 @@ final class Daemon: @unchecked Sendable {
     private func reschedule() {
         timer?.cancel()
         timer = nil
-        // 系统默认档不需要周期任务，状态按需读取，空闲时零开销
-        guard config.profile != .system else {
+        // 系统默认档不需要周期任务，状态按需读取，空闲时零开销；强力压制期间例外
+        guard config.profile != .system || suppression.isActive else {
             state = .system
             activeProfile = .system
             return
@@ -152,11 +155,22 @@ final class Daemon: @unchecked Sendable {
             // 只有自动模式下 SMC 目标转速才代表系统意图；dry-run 从不写入，风扇始终是系统控制
             return FanSample(spec: spec, actualRPM: r?.actualRPM, systemTargetRPM: r?.manual == false ? r?.targetRPM : nil)
         }
-        let decision = controller.step(profile: profile, temp: temps.control, thermal: thermal, fans: samples, now: now)
+        let expired = suppression.expireIfNeeded(now: now)
+        if expired { log.notice("suppression expired") }
+        let decision = controller.step(profile: profile, temp: temps.control, thermal: thermal, fans: samples,
+                                       now: now, suppress: suppression.isActive)
+        if suppression.isActive && decision.state != .suppressed {
+            // 紧急满速、过热放开、传感器异常都会提前结束压制
+            suppression.end(now: now)
+            suppressNote = "强力压制已提前结束：\(decision.state.displayName)"
+            log.notice("suppression aborted: \(decision.state.rawValue, privacy: .public)")
+        }
         transition(to: decision.state)
         wroteHardware = false
         apply(decision, hw: hw)
         if wroteHardware { fanReadings = hw.readFans() }
+        // 系统默认档下压制结束后停掉定时器，回到零开销
+        if !suppression.isActive && config.profile == .system && timer != nil { reschedule() }
     }
 
     private func transition(to s: ControlState) {
@@ -243,6 +257,27 @@ final class Daemon: @unchecked Sendable {
                 reschedule()
                 // 立即执行一次，让返回给界面的状态就是新档位的结果
                 if p != .system { tick() }
+            case .setSuppress(true):
+                guard unsupportedReason == nil, hw?.canControl == true else {
+                    return IPCResponse(ok: false, error: "本机不支持手动控制风扇，无法强力压制", status: snapshot())
+                }
+                switch suppression.start(now: now) {
+                case .started:
+                    log.notice("suppression started")
+                    suppressNote = nil
+                    if timer == nil { reschedule() }
+                    tick()
+                case .alreadyActive:
+                    break
+                case .coolingDown(let remaining):
+                    return IPCResponse(ok: false, error: "强力压制冷却中，\(Int(remaining.rounded(.up))) 秒后可再次开启",
+                                       status: snapshot())
+                }
+            case .setSuppress(false):
+                guard suppression.isActive else { break }
+                suppression.end(now: now)
+                log.notice("suppression cancelled")
+                tick()
             case .setQuietFirst(let v):
                 guard v != config.quietFirst else { break }
                 config.quietFirst = v
@@ -285,7 +320,10 @@ final class Daemon: @unchecked Sendable {
             fans: fans,
             controlSupported: unsupportedReason == nil && (hw?.canControl ?? false),
             dryRun: dryRun,
-            lastError: unsupportedReason ?? lastError
+            lastError: unsupportedReason ?? lastError,
+            suppressRemaining: suppression.remaining(now: now),
+            suppressCooldown: suppression.cooldownRemaining(now: now),
+            suppressNote: suppressNote
         )
     }
 }

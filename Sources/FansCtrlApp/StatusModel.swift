@@ -27,6 +27,9 @@ final class StatusModel {
     private(set) var connection: Connection = .unknown
     private(set) var pendingProfile: FanProfile?
     private(set) var history: [HistorySample] = []
+    /// 强力压制结束/冷却结束的绝对时间，界面据此每秒本地倒计时，无需高频轮询
+    private(set) var suppressEndsAt: Date?
+    private(set) var suppressCooldownEndsAt: Date?
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     var message: String?
 
@@ -72,12 +75,17 @@ final class StatusModel {
     }
 
     /// “静音优先”只对智能档有意义：在其他档位打开时顺带切到智能档，避免开关无效果
+    func setSuppress(_ on: Bool) async {
+        await perform(.setSuppress(on), surfaceErrors: true)
+    }
+
     func setQuietFirst(_ value: Bool) async {
         if status?.quietFirst != value { await perform(.setQuietFirst(value)) }
         if value, status?.selectedProfile != .smart { await select(.smart) }
     }
 
-    private func perform(_ command: IPCCommand) async {
+    /// - Parameter surfaceErrors: 业务拒绝（如冷却中）以提示展示，不当作连接故障
+    private func perform(_ command: IPCCommand, surfaceErrors: Bool = false) async {
         let client = self.client
         // IPC 是同步阻塞调用（带 2 秒超时），放到后台线程避免卡住界面
         let result = await Task.detached(priority: .userInitiated) {
@@ -87,7 +95,13 @@ final class StatusModel {
         case .success(let s):
             status = s
             connection = .connected
+            let now = Date()
+            suppressEndsAt = s.suppressRemaining.map { now.addingTimeInterval($0) }
+            suppressCooldownEndsAt = s.suppressCooldown.map { now.addingTimeInterval($0) }
             record(s)
+        case .failure(IPCError.io(let m)) where surfaceErrors:
+            message = m
+            await perform(.status)
         case .failure(let error as IPCError):
             switch error {
             case .notRunning: connection = .notRunning

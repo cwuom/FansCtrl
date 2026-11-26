@@ -22,6 +22,8 @@ public enum ControlState: String, Codable, Sendable {
     case manual
     /// 静音档正在把系统想要的转速压在封顶值
     case capped
+    /// 强力压制：临时压到最低转速
+    case suppressed
     /// 静音类档位过热，安全阀已放开交还系统
     case released
     /// 温度达到紧急阈值，满速
@@ -38,6 +40,7 @@ public enum ControlState: String, Codable, Sendable {
         case .system: return "系统控制"
         case .manual: return "按档位调速"
         case .capped: return "静音封顶中"
+        case .suppressed: return "强力压制中"
         case .released: return "过热保护：已交还系统"
         case .emergency: return "紧急降温：满速"
         case .sensorFault: return "传感器异常：已交还系统"
@@ -125,13 +128,14 @@ public struct FanController: Sendable {
         last = [:]
     }
 
+    /// - Parameter suppress: 强力压制期间为 true。紧急满速与过热放开仍然优先于压制。
     public mutating func step(profile: FanProfile, temp: Double?, thermal: ThermalLevel,
-                              fans: [FanSample], now: Double) -> ControlDecision {
+                              fans: [FanSample], now: Double, suppress: Bool = false) -> ControlDecision {
         let policy = ProfilePolicy.forProfile(profile)
         let dt = min(max(now - (lastTime ?? (now - 2)), 0.5), 10)
         lastTime = now
 
-        guard policy != .system, !fans.isEmpty else {
+        guard (policy != .system || suppress), !fans.isEmpty else {
             reset()
             return .automatic(.system)
         }
@@ -152,6 +156,19 @@ public struct FanController: Sendable {
             engaged = true
             last = Dictionary(uniqueKeysWithValues: fans.map { ($0.spec.index, $0.spec.maxRPM) })
             return ControlDecision(state: .emergency, targets: last)
+        }
+
+        if suppress {
+            // 压制期间温度仍过高：立即放弃压制，交还系统全力散热
+            if s >= tuning.capReleaseTemp {
+                disengage()
+                return .automatic(.released)
+            }
+            disengage()
+            engaged = true
+            // 不走斜率，立即压到最低转速，这正是“瞬间降噪”
+            last = Dictionary(uniqueKeysWithValues: fans.map { ($0.spec.index, $0.spec.minRPM) })
+            return ControlDecision(state: .suppressed, targets: last)
         }
 
         switch policy {
