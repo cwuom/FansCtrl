@@ -1,0 +1,158 @@
+import Foundation
+
+public enum IPC {
+    public static let defaultSocketPath = "/var/run/com.fansctrl.daemon.sock"
+    public static let maxMessageBytes = 16 * 1024
+    public static let protocolVersion = 1
+
+    /// 允许用环境变量指向开发态（非 root dry-run）守护进程。
+    public static var socketPath: String {
+        ProcessInfo.processInfo.environment["FANSCTRL_SOCKET"] ?? defaultSocketPath
+    }
+}
+
+/// 客户端只能发这几种命令。守护进程不暴露任意 SMC 读写，这是安全边界。
+public enum IPCCommand: Equatable, Sendable {
+    case status
+    case setProfile(FanProfile)
+    case setQuietFirst(Bool)
+
+    private struct Wire: Codable {
+        var cmd: String
+        var profile: String?
+        var value: Bool?
+    }
+
+    public func encoded() throws -> Data {
+        let wire: Wire
+        switch self {
+        case .status: wire = Wire(cmd: "status")
+        case .setProfile(let p): wire = Wire(cmd: "setProfile", profile: p.rawValue)
+        case .setQuietFirst(let v): wire = Wire(cmd: "setQuietFirst", value: v)
+        }
+        return try JSONEncoder().encode(wire)
+    }
+
+    public static func parse(_ data: Data) throws -> IPCCommand {
+        guard data.count <= IPC.maxMessageBytes else { throw IPCError.invalidRequest("请求过大") }
+        let wire: Wire
+        do { wire = try JSONDecoder().decode(Wire.self, from: data) } catch { throw IPCError.invalidRequest("JSON 格式错误") }
+        switch wire.cmd {
+        case "status":
+            return .status
+        case "setProfile":
+            guard let raw = wire.profile, let p = FanProfile(rawValue: raw) else { throw IPCError.invalidRequest("未知档位") }
+            return .setProfile(p)
+        case "setQuietFirst":
+            guard let v = wire.value else { throw IPCError.invalidRequest("缺少 value") }
+            return .setQuietFirst(v)
+        default:
+            throw IPCError.invalidRequest("未知命令")
+        }
+    }
+}
+
+public enum IPCError: Error, Equatable, CustomStringConvertible {
+    case invalidRequest(String)
+    case notRunning
+    case permissionDenied
+    case io(String)
+
+    public var description: String {
+        switch self {
+        case .invalidRequest(let m): return "请求无效：\(m)"
+        case .notRunning: return "后台服务未运行"
+        case .permissionDenied: return "无权访问后台服务"
+        case .io(let m): return "通信失败：\(m)"
+        }
+    }
+}
+
+public struct FanStatus: Codable, Equatable, Sendable {
+    public var index: Int
+    public var actualRPM: Double?
+    public var targetRPM: Double?
+    public var minRPM: Double
+    public var maxRPM: Double
+    public var manual: Bool?
+    /// 守护进程下发（dry-run 时为计划下发）的转速；nil 表示交给系统
+    public var plannedRPM: Double?
+
+    public init(index: Int, actualRPM: Double?, targetRPM: Double?, minRPM: Double, maxRPM: Double, manual: Bool?, plannedRPM: Double?) {
+        self.index = index
+        self.actualRPM = actualRPM
+        self.targetRPM = targetRPM
+        self.minRPM = minRPM
+        self.maxRPM = maxRPM
+        self.manual = manual
+        self.plannedRPM = plannedRPM
+    }
+}
+
+public struct StatusSnapshot: Codable, Equatable, Sendable {
+    public var protocolVersion: Int = IPC.protocolVersion
+    public var model: String
+    public var selectedProfile: FanProfile
+    public var activeProfile: FanProfile
+    public var smartReason: String?
+    public var quietFirst: Bool
+    public var state: ControlState
+    public var cpuTemp: Double?
+    public var gpuTemp: Double?
+    public var controlTemp: Double?
+    public var cpuLoad: Double?
+    public var onBattery: Bool
+    public var thermal: ThermalLevel
+    public var fans: [FanStatus]
+    public var controlSupported: Bool
+    public var dryRun: Bool
+    public var lastError: String?
+
+    public init(
+        model: String,
+        selectedProfile: FanProfile,
+        activeProfile: FanProfile,
+        smartReason: String?,
+        quietFirst: Bool,
+        state: ControlState,
+        cpuTemp: Double?,
+        gpuTemp: Double?,
+        controlTemp: Double?,
+        cpuLoad: Double?,
+        onBattery: Bool,
+        thermal: ThermalLevel,
+        fans: [FanStatus],
+        controlSupported: Bool,
+        dryRun: Bool,
+        lastError: String?
+    ) {
+        self.model = model
+        self.selectedProfile = selectedProfile
+        self.activeProfile = activeProfile
+        self.smartReason = smartReason
+        self.quietFirst = quietFirst
+        self.state = state
+        self.cpuTemp = cpuTemp
+        self.gpuTemp = gpuTemp
+        self.controlTemp = controlTemp
+        self.cpuLoad = cpuLoad
+        self.onBattery = onBattery
+        self.thermal = thermal
+        self.fans = fans
+        self.controlSupported = controlSupported
+        self.dryRun = dryRun
+        self.lastError = lastError
+    }
+}
+
+public struct IPCResponse: Codable, Sendable {
+    public var ok: Bool
+    public var error: String?
+    public var status: StatusSnapshot?
+
+    public init(ok: Bool, error: String? = nil, status: StatusSnapshot? = nil) {
+        self.ok = ok
+        self.error = error
+        self.status = status
+    }
+}
