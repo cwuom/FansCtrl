@@ -248,7 +248,8 @@ final class Daemon: @unchecked Sendable {
                 log.notice("profile set to \(p.rawValue, privacy: .public)")
                 config.profile = p
                 persist()
-                controller.reset()
+                // 保留当前转速平滑过渡到新档位，避免切档瞬间的转速突变
+                controller.profileChanged()
                 smart = SmartSelector()
                 if p == .system {
                     releaseToSystem(force: true)

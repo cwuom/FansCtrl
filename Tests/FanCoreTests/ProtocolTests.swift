@@ -39,6 +39,29 @@ import Testing
         #expect(throws: IPCError.invalidRequest("消息过大")) { try SocketIO.readLine(pair[0], limit: 1024) }
     }
 
+    /// 回归：App 升级而后台服务仍是旧版时，必须能识别出服务过旧，而不是只显示“未知命令”
+    @Test func detectsOutdatedDaemon() throws {
+        let v1 = #"{"protocolVersion":1,"model":"Mac17,2","selectedProfile":"smart","activeProfile":"quiet","quietFirst":false,"state":"system","onBattery":false,"thermal":0,"fans":[],"controlSupported":true,"dryRun":false}"#
+        let old = try JSONDecoder().decode(StatusSnapshot.self, from: Data(v1.utf8))
+        #expect(old.isOutdated)
+        #expect(old.isVersionMismatch)
+        #expect(old.suppressRemaining == nil)
+
+        let current = StatusSnapshot(model: "m", selectedProfile: .smart, activeProfile: .quiet, smartReason: nil,
+                                     quietFirst: false, state: .system, cpuTemp: nil, gpuTemp: nil, controlTemp: nil,
+                                     cpuLoad: nil, onBattery: false, thermal: .nominal, fans: [], controlSupported: true,
+                                     dryRun: false, lastError: nil)
+        let roundTrip = try JSONDecoder().decode(StatusSnapshot.self, from: JSONEncoder().encode(current))
+        #expect(!roundTrip.isOutdated)
+        #expect(!roundTrip.isVersionMismatch)
+
+        // 协议兼容但版本不同（例如只修了服务端行为）也要提示更新
+        var older = current
+        older.daemonVersion = "0.0.1"
+        #expect(!older.isOutdated)
+        #expect(older.isVersionMismatch)
+    }
+
     @Test func socketPathLengthChecked() {
         #expect(throws: IPCError.self) { try UnixSocketAddress.make(String(repeating: "a", count: 200)) }
     }

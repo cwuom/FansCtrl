@@ -42,15 +42,51 @@ extension FanProfile {
 
 struct StateChip: View {
     let state: ControlState
+    /// 强力压制剩余秒数，压制中直接显示在状态胶囊里
+    var countdown: Int? = nil
 
     var body: some View {
-        Label(state.displayName, systemImage: state.symbolName)
+        Label(countdown.map { "强力压制 \($0) 秒" } ?? state.displayName,
+              systemImage: countdown == nil ? state.symbolName : ControlState.suppressed.symbolName)
+            .monospacedDigit()
+            .contentTransition(.numericText(countsDown: true))
             .font(.caption.weight(.medium))
             .foregroundStyle(Palette.state(state))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .glassCapsule()
-            .accessibilityLabel("控制状态：\(state.displayName)")
+            .accessibilityLabel(countdown.map { "强力压制中，剩余 \($0) 秒" } ?? "控制状态：\(state.displayName)")
+    }
+}
+
+/// 后台服务比 App 旧时的提示，提供一键更新。
+struct ServiceUpdateBanner: View {
+    let model: StatusModel
+
+    var body: some View {
+        if model.needsServiceUpdate {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("后台服务需要更新").font(.subheadline.weight(.semibold))
+                    Text(model.serviceLacksFeatures
+                         ? "当前服务版本较旧，强力压制等新功能不可用。更新时会弹出管理员授权。"
+                         : "服务版本 \(model.status?.daemonVersion ?? "旧版") 与本 App 需要的 \(BuildInfo.serviceVersion) 不一致，更新后最新修复才会生效。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("更新…") { model.installService() }
+                    .glassButtonStyle(prominent: true)
+                    .tint(.orange)
+            }
+            .padding(12)
+            .glassCard(cornerRadius: 16, tint: Color.orange.opacity(0.14))
+        }
     }
 }
 

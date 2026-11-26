@@ -20,8 +20,8 @@ struct SuppressControl: View {
 
     @ViewBuilder
     private func content(now: Date) -> some View {
-        if let end = model.suppressEndsAt, end > now {
-            active(remaining: end.timeIntervalSince(now))
+        if let left = model.suppressCountdown {
+            active(remaining: Double(left))
         } else if confirming {
             confirmation
         } else {
@@ -29,23 +29,44 @@ struct SuppressControl: View {
         }
     }
 
+    /// 与“智能”档同一视觉语言的玻璃行：图标 + 标题/说明 + 右侧小按钮，而不是整条实心色块。
     private func idle(cooldown: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                confirming = true
-            } label: {
-                Label(cooldown.map { "冷却中 · \(Int($0.rounded(.up))) 秒后可用" } ?? "强力压制 60 秒",
-                      systemImage: "speaker.slash.fill")
-                    .frame(maxWidth: .infinity)
+        let available = cooldown == nil && status.controlSupported && !model.serviceLacksFeatures
+        return HStack(spacing: 12) {
+            Image(systemName: "speaker.slash.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(available ? Color.indigo : Color.secondary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill((available ? Color.indigo : Color.secondary).opacity(0.14)))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("强力压制").font(.subheadline.weight(.semibold))
+                Text(idleSubtitle(cooldown: cooldown))
+                    .font(.caption2)
+                    .foregroundStyle(status.suppressNote == nil ? Color.secondary : Color.orange)
+                    .lineLimit(1)
+                    .monospacedDigit()
             }
-            .glassButtonStyle(prominent: cooldown == nil)
-            .tint(.indigo)
-            .disabled(cooldown != nil || !status.controlSupported)
-            .help("风扇噪音突然变大时使用：瞬间压到最低转速 60 秒")
-            if let note = status.suppressNote {
-                Text(note).font(.caption).foregroundStyle(.orange)
-            }
+            Spacer(minLength: 8)
+            Button(cooldown == nil ? "开启" : "\(Int((cooldown ?? 0).rounded(.up)))s") { confirming = true }
+                .glassButtonStyle(prominent: false)
+                .controlSize(.small)
+                .tint(.indigo)
+                .disabled(!available)
+                .accessibilityLabel("开启强力压制")
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .glassCard(cornerRadius: 16)
+        .help("风扇噪音突然变大时使用：瞬间压到最低转速 60 秒")
+    }
+
+    private func idleSubtitle(cooldown: Double?) -> String {
+        if model.serviceLacksFeatures { return "需先更新后台服务" }
+        if !status.controlSupported { return "本机不支持手动控制" }
+        if let c = cooldown { return "冷却中，\(Int(c.rounded(.up))) 秒后可再次使用" }
+        if let note = status.suppressNote { return note }
+        return "风扇突然变吵时，瞬间静音 60 秒"
     }
 
     private var confirmation: some View {
@@ -111,9 +132,5 @@ struct SuppressControl: View {
         }
         .padding(14)
         .glassCard(cornerRadius: 16, tint: Color.indigo.opacity(0.14))
-        .task(id: Int(remaining.rounded(.up)) == 0) {
-            // 本地倒计时到 0 时向服务确认最新状态
-            if Int(remaining.rounded(.up)) == 0 { await model.refresh() }
-        }
     }
 }

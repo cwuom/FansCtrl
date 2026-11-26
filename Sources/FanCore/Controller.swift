@@ -79,9 +79,11 @@ public struct ControllerTuning: Sendable {
     /// 静音封顶档的安全阀：平滑温度超过此值或热压力达到 serious，交还系统全力散热
     public var capReleaseTemp: Double
     public var capReleaseHysteresis: Double = 6
-    /// 封顶后温度比接管时下降这么多，就交还系统重新评估
-    public var capRetryDrop: Double = 8
-    public var rampUpPerSecond: Double = 600
+    /// 封顶后温度降到此值以下才交还系统。系统自己的曲线有滞后，过早交还会被系统猛地拉高、
+    /// 随即又被封顶，形成忽高忽低的噪音
+    public var capHandBackBelow: Double
+    /// 升速是最容易被听到的变化，非紧急情况一律缓慢升速
+    public var rampUpPerSecond: Double = 300
     /// 降速慢于升速：转速来回抖动比稳定的低速更容易被注意到
     public var rampDownPerSecond: Double = 250
     public var deadbandRPM: Double = 80
@@ -90,14 +92,17 @@ public struct ControllerTuning: Sendable {
     public var fallAlpha: Double = 0.2
 
     /// Apple Silicon 的 SoC 在 100°C 左右运行是系统设计内的常态，阈值相应更高
-    public static let appleSilicon = ControllerTuning(emergencyTemp: 108, emergencyRecover: 100, capReleaseTemp: 103)
+    public static let appleSilicon = ControllerTuning(emergencyTemp: 108, emergencyRecover: 100, capReleaseTemp: 103,
+                                                      capHandBackBelow: 60)
     /// Intel 处理器在 100°C 左右开始硬件降频
-    public static let intel = ControllerTuning(emergencyTemp: 99, emergencyRecover: 90, capReleaseTemp: 95)
+    public static let intel = ControllerTuning(emergencyTemp: 99, emergencyRecover: 90, capReleaseTemp: 95,
+                                               capHandBackBelow: 55)
 
-    public init(emergencyTemp: Double, emergencyRecover: Double, capReleaseTemp: Double) {
+    public init(emergencyTemp: Double, emergencyRecover: Double, capReleaseTemp: Double, capHandBackBelow: Double) {
         self.emergencyTemp = emergencyTemp
         self.emergencyRecover = emergencyRecover
         self.capReleaseTemp = capReleaseTemp
+        self.capHandBackBelow = capHandBackBelow
     }
 }
 
@@ -107,7 +112,6 @@ public struct FanController: Sendable {
     public private(set) var smoothedTemp: Double?
     private var engaged = false
     private var capping = false
-    private var capEngageTemp: Double = 0
     private var capTargets: [Int: Double] = [:]
     private var releasedLatch = false
     private var emergencyLatch = false
@@ -119,6 +123,14 @@ public struct FanController: Sendable {
     public mutating func reset() {
         let t = tuning
         self = FanController(tuning: t)
+    }
+
+    /// 切换档位：只清掉与旧档位相关的判定状态，保留当前输出转速与平滑温度，
+    /// 新档位从当前转速平滑过渡，而不是从头开始造成突变。紧急状态同样保留。
+    public mutating func profileChanged() {
+        releasedLatch = false
+        capping = false
+        capTargets = [:]
     }
 
     private mutating func disengage() {
@@ -178,8 +190,8 @@ public struct FanController: Sendable {
         case .full:
             capping = false
             engaged = true
-            last = Dictionary(uniqueKeysWithValues: fans.map { ($0.spec.index, $0.spec.maxRPM) })
-            return ControlDecision(state: .manual, targets: last)
+            let desired = Dictionary(uniqueKeysWithValues: fans.map { ($0.spec.index, $0.spec.maxRPM) })
+            return ControlDecision(state: .manual, targets: ramp(fans, desired: desired, dt: dt))
 
         case .cap(let ceiling):
             if s >= tuning.capReleaseTemp || thermal >= .serious {
@@ -191,9 +203,17 @@ public struct FanController: Sendable {
                 disengage()
                 return .automatic(.released)
             }
-            if capping && s <= capEngageTemp - tuning.capRetryDrop {
+            if capping && s < tuning.capHandBackBelow {
                 disengage()
                 return .automatic(.system)
+            }
+            if !capping && engaged && !last.isEmpty {
+                // 已在手动控制（从均衡/性能/全速切过来）：直接从当前转速平滑压到封顶，
+                // 不经过“交还系统”，避免被系统突然拉高
+                capping = true
+                capTargets = Dictionary(uniqueKeysWithValues: fans.map { f in
+                    (f.spec.index, min(last[f.spec.index] ?? f.spec.minRPM, ceilingRPM(f.spec, ceiling)))
+                })
             }
             if !capping {
                 let over = fans.contains { f in
@@ -206,7 +226,6 @@ public struct FanController: Sendable {
                 }
                 capping = true
                 engaged = true
-                capEngageTemp = s
                 // 系统本来就转得比封顶慢的风扇保持系统当时的转速，不被“抬高”到封顶
                 capTargets = Dictionary(uniqueKeysWithValues: fans.map { f in
                     let c = ceilingRPM(f.spec, ceiling)
@@ -248,9 +267,13 @@ public struct FanController: Sendable {
             let want = min(max(desired[spec.index] ?? spec.minRPM, spec.minRPM), spec.maxRPM)
             let base = min(max(last[spec.index] ?? f.actualRPM ?? spec.minRPM, spec.minRPM), spec.maxRPM)
             let delta = want - base
-            let next = abs(delta) < tuning.deadbandRPM
-                ? base
-                : base + min(max(delta, -tuning.rampDownPerSecond * dt), tuning.rampUpPerSecond * dt)
+            let next: Double
+            if abs(delta) >= tuning.deadbandRPM {
+                next = base + min(max(delta, -tuning.rampDownPerSecond * dt), tuning.rampUpPerSecond * dt)
+            } else {
+                // 死区内不改写以减少 SMC 写入；但目标是最低/最高转速时要精确落到位（全速就该是满速）
+                next = (want == spec.maxRPM || want == spec.minRPM) ? want : base
+            }
             out[spec.index] = next.rounded()
         }
         last = out

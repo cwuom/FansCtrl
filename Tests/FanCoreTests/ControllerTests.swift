@@ -101,9 +101,10 @@ private func sample(actual: Double? = 0, system: Double? = 0) -> [FanSample] {
     @Test func capRetriesSystemAfterCoolingDown() {
         var c = FanController()
         _ = c.step(profile: .library, temp: 90, thermal: .nominal, fans: sample(actual: 5000, system: 5000), now: 0)
-        var d = c.step(profile: .library, temp: 70, thermal: .nominal, fans: sample(actual: 3000, system: nil), now: 2)
-        for i in 2..<10 where d.state == .capped {
-            d = c.step(profile: .library, temp: 70, thermal: .nominal, fans: sample(actual: 3000, system: nil), now: Double(i) * 2)
+        // 降到交还阈值（Apple Silicon 60°C）以下才交还系统
+        var d = c.step(profile: .library, temp: 50, thermal: .nominal, fans: sample(actual: 3000, system: nil), now: 2)
+        for i in 2..<20 where d.state == .capped {
+            d = c.step(profile: .library, temp: 50, thermal: .nominal, fans: sample(actual: 3000, system: nil), now: Double(i) * 2)
         }
         #expect(d == .automatic(.system))
     }
@@ -129,9 +130,13 @@ private func sample(actual: Double? = 0, system: Double? = 0) -> [FanSample] {
         #expect(try #require(d.targets?[0]) <= 2400 + 600 * 2)
     }
 
-    @Test func maxProfileRunsFull() {
+    @Test func maxProfileReachesFull() {
         var c = FanController()
-        #expect(c.step(profile: .max, temp: 40, thermal: .nominal, fans: sample(), now: 0).targets == [0: 6550])
+        var d = ControlDecision.automatic(.system)
+        for i in 0..<20 {
+            d = c.step(profile: .max, temp: 40, thermal: .nominal, fans: sample(actual: d.targets?[0] ?? 0), now: Double(i) * 2)
+        }
+        #expect(d.targets == [0: 6550])
     }
 
     @Test(arguments: FanProfile.allCases)

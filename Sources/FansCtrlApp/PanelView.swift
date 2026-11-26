@@ -4,13 +4,16 @@ import SwiftUI
 /// 菜单栏面板：快速查看与切档。
 struct PanelView: View {
     let model: StatusModel
+    let resources: ResourceMonitor
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            ServiceUpdateBanner(model: model)
             ConnectionGate(model: model) { s in
                 PanelHero(status: s)
+                if let r = resources.resources { PanelResourceStrip(resources: r) }
                 SuppressControl(model: model, status: s)
                 PanelProfiles(model: model, status: s)
                 if let note = s.lastError { NoticeRow(text: note) }
@@ -20,8 +23,15 @@ struct PanelView: View {
         }
         .padding(16)
         .frame(width: 360)
-        .onAppear { model.beginObserving() }
-        .onDisappear { model.endObserving() }
+        .sizesWindowToContent()
+        .onAppear {
+            model.beginObserving()
+            resources.begin(.light)
+        }
+        .onDisappear {
+            model.endObserving()
+            resources.end(.light)
+        }
     }
 
     private var header: some View {
@@ -36,7 +46,7 @@ struct PanelView: View {
                 Text(model.status?.model ?? "风扇控制").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if let s = model.status { StateChip(state: s.state) }
+            if let s = model.status { StateChip(state: s.state, countdown: model.suppressCountdown) }
         }
     }
 
@@ -55,6 +65,41 @@ struct PanelView: View {
                 .glassButtonStyle(prominent: false)
                 .controlSize(.small)
         }
+    }
+}
+
+/// 面板里的资源概况：磁盘可用、内存可用、交换已用
+private struct PanelResourceStrip: View {
+    let resources: ResourceSnapshot
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if let d = resources.disk {
+                item("磁盘可用", ByteFormat.string(d.available), "internaldrive",
+                     warn: d.availableFraction < 0.1)
+            }
+            if let m = resources.memory {
+                Divider().frame(height: 28)
+                item("内存可用", ByteFormat.string(m.available), "memorychip", warn: m.pressure != .normal)
+                Divider().frame(height: 28)
+                item("交换已用", ByteFormat.string(m.swapUsed), "arrow.left.arrow.right",
+                     warn: m.swapUsed > m.total / 4)
+            }
+        }
+        .padding(.vertical, 10)
+        .glassCard(cornerRadius: 16)
+    }
+
+    private func item(_ title: String, _ value: String, _ symbol: String, warn: Bool) -> some View {
+        VStack(spacing: 2) {
+            Label(title, systemImage: symbol).font(.caption2).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.callout, design: .rounded).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(warn ? Color.orange : Color.primary)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 

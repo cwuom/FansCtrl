@@ -17,13 +17,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.0</string>
+	<string>1.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>5</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>安装或卸载后台服务时需要请求管理员授权。</string>
+	<string>“一键整理”需要控制访达来关闭其窗口；安装或卸载后台服务时需要请求管理员授权。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

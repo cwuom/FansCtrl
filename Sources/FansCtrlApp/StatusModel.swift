@@ -30,6 +30,14 @@ final class StatusModel {
     /// 强力压制结束/冷却结束的绝对时间，界面据此每秒本地倒计时，无需高频轮询
     private(set) var suppressEndsAt: Date?
     private(set) var suppressCooldownEndsAt: Date?
+    /// 强力压制剩余整秒数，菜单栏图标、工具栏和卡片共用这一个倒计时
+    private(set) var suppressCountdown: Int?
+    private var countdownTask: Task<Void, Never>?
+
+    /// 后台服务比 App 旧，需要重新安装才能使用新功能
+    var needsServiceUpdate: Bool { status?.isVersionMismatch ?? false }
+    /// 服务协议过旧，新命令（如强力压制）无法使用
+    var serviceLacksFeatures: Bool { status?.isOutdated ?? false }
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     var message: String?
 
@@ -98,9 +106,11 @@ final class StatusModel {
             let now = Date()
             suppressEndsAt = s.suppressRemaining.map { now.addingTimeInterval($0) }
             suppressCooldownEndsAt = s.suppressCooldown.map { now.addingTimeInterval($0) }
+            updateCountdown()
             record(s)
         case .failure(IPCError.io(let m)) where surfaceErrors:
-            message = m
+            // 旧版服务不认识新命令时给出可操作的提示
+            message = m.contains("未知命令") ? "后台服务版本过旧，不支持此功能，请先更新后台服务" : m
             await perform(.status)
         case .failure(let error as IPCError):
             switch error {
@@ -110,6 +120,32 @@ final class StatusModel {
             }
         case .failure(let error):
             connection = .failed(error.localizedDescription)
+        }
+    }
+
+    /// 压制期间每秒更新倒计时（不访问后台服务），到期后向服务确认一次最新状态。
+    private func updateCountdown() {
+        guard let end = suppressEndsAt, end > Date() else {
+            countdownTask?.cancel()
+            countdownTask = nil
+            suppressCountdown = nil
+            return
+        }
+        suppressCountdown = Int(end.timeIntervalSinceNow.rounded(.up))
+        guard countdownTask == nil else { return }
+        countdownTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, let end = self.suppressEndsAt else { return }
+                let left = end.timeIntervalSinceNow
+                if left <= 0 {
+                    self.countdownTask = nil
+                    self.suppressCountdown = nil
+                    await self.refresh()
+                    return
+                }
+                self.suppressCountdown = Int(left.rounded(.up))
+            }
         }
     }
 
@@ -128,7 +164,7 @@ final class StatusModel {
     func installService() {
         do {
             try ServiceInstaller.run(script: "install")
-            message = "后台服务已安装"
+            message = "后台服务已安装并更新到最新版本"
         } catch {
             message = "\(error)"
         }

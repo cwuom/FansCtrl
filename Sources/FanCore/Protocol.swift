@@ -3,7 +3,9 @@ import Foundation
 public enum IPC {
     public static let defaultSocketPath = "/var/run/com.fansctrl.daemon.sock"
     public static let maxMessageBytes = 16 * 1024
-    public static let protocolVersion = 1
+    /// 每次新增命令或状态字段都要递增，App 据此判断后台服务是否需要更新。
+    /// 1：初版；2：强力压制（suppress 命令与 suppress* 状态字段）
+    public static let protocolVersion = 2
 
     /// 允许用环境变量指向开发态（非 root dry-run）守护进程。
     public static var socketPath: String {
@@ -97,6 +99,15 @@ public struct FanStatus: Codable, Equatable, Sendable {
 
 public struct StatusSnapshot: Codable, Equatable, Sendable {
     public var protocolVersion: Int = IPC.protocolVersion
+
+    /// 后台服务版本；旧版服务不发送该字段
+    public var daemonVersion: String? = BuildInfo.serviceVersion
+
+    /// 后台服务比 App 旧：部分功能（如强力压制）不可用，需要重新安装服务
+    public var isOutdated: Bool { protocolVersion < IPC.protocolVersion }
+
+    /// 后台服务与 App 版本不一致：即使协议兼容，服务端的修复也要重新安装才生效
+    public var isVersionMismatch: Bool { isOutdated || daemonVersion != BuildInfo.serviceVersion }
     public var model: String
     public var selectedProfile: FanProfile
     public var activeProfile: FanProfile
